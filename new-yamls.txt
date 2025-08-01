@@ -1,0 +1,6 @@
+/tmp/tmp.wmyJ5IrBap/serving-core.yaml
+/tmp/tmp.wmyJ5IrBap/serving-default-domain.yaml
+/tmp/tmp.wmyJ5IrBap/serving-storage-version-migration.yaml
+/tmp/tmp.wmyJ5IrBap/serving-post-install-jobs.yaml
+/tmp/tmp.wmyJ5IrBap/serving-hpa.yaml
+/tmp/tmp.wmyJ5IrBap/serving-crds.yaml

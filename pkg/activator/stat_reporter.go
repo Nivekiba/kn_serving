@@ -17,7 +17,6 @@ limitations under the License.
 package activator
 
 import (
-	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 	"knative.dev/serving/pkg/autoscaler/metrics"
 )
@@ -35,15 +34,16 @@ func ReportStats(logger *zap.SugaredLogger, sink RawSender, source <-chan []metr
 	for sms := range source {
 		go func(sms []metrics.StatMessage) {
 			wsms := metrics.ToWireStatMessages(sms)
-			b, err := wsms.Marshal()
+			// b, err := wsms.Marshal()
+			_, err := wsms.Marshal()
 			if err != nil {
 				logger.Errorw("Error while marshaling stats", zap.Error(err))
 				return
 			}
 
-			if err := sink.SendRaw(websocket.BinaryMessage, b); err != nil {
-				logger.Errorw("Error while sending stats", zap.Error(err))
-			}
+			// if err := sink.SendRaw(websocket.BinaryMessage, b); err != nil {
+			// 	logger.Errorw("Error while sending stats", zap.Error(err))
+			// }
 		}(sms)
 	}
 }

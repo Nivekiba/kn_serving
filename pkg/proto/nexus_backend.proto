@@ -1,0 +1,53 @@
+syntax = "proto3";
+import "vm_orchestrator.proto";
+
+option go_package = "github.com/JooyoungPark73/khala/pkg/proto";
+package proto;
+
+service NexusBackend {
+    rpc AddServer (AddServerReq) returns (ServerMetadata) {}
+    rpc RemoveServer (RemoveServerReq) returns (RemoveServerResp) {}
+    rpc DrainServer (Empty) returns (DrainServerResp) {}
+    rpc GetServerMetadata (GetServerMetadataReq) returns (GetServerMetadataResp) {}
+    rpc ListServers (Empty) returns (ListServersResp) {}
+    rpc GetPID (Empty) returns (GetPIDResp) {}
+}
+
+message AddServerReq {
+    string id = 1;
+    string chroot = 2;
+    bool setS3Handler = 3;
+    bool setRPCHandler = 4;
+}
+
+message ServerMetadata {
+    string id = 1;
+    string vsock_path = 2;
+    uint32 rpc_incoming_port = 3;
+    bool s3_handler = 4;
+    bool rpc_handler = 5;
+}
+
+message ListServersResp {
+    repeated ServerMetadata servers = 1;
+}
+
+message GetServerMetadataReq {
+    string id = 1;
+}
+
+message GetServerMetadataResp {
+    string id = 1;
+}
+
+message RemoveServerReq {
+    string id = 1;
+}
+
+message RemoveServerResp {
+    string message = 1;
+}
+
+message DrainServerResp {
+    string message = 1;
+}

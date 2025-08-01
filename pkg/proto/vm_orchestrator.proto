@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+option go_package = "github.com/JooyoungPark73/khala/pkg/proto";
+package proto;
+
+service Orchestrator {
+    rpc StartVM (StartVMReq) returns (StartVMResp) {}
+    rpc SnapshotVM (SnapshotVMReq) returns (SnapshotVMResp) {}
+    rpc RestoreVM (RestoreVMReq) returns (RestoreVMResp) {}
+    rpc StopVM (StopVMReq) returns (Status) {}
+    rpc Cleanup (Empty) returns (Status) {}
+    rpc GetVMIP (GetVMIPReq) returns (GetVMIPResp) {}
+    rpc ListVMs (Empty) returns (VMList) {}
+    rpc ListSnapshots (Empty) returns (SnapshotList) {}
+    rpc GetVMMetadata (GetVMMetadataReq) returns (GetVMMetadataResp) {}
+    rpc SendSSHCommand (SendSSHCommandReq) returns (SendSSHCommandResp) {}
+    rpc GetPID (Empty) returns (GetPIDResp) {}
+}
+
+message StartVMReq {
+    string workload = 1;
+}
+
+message SnapshotVMReq {
+    string id = 1;
+    string snap_id = 2;
+}
+
+message RestoreVMReq {
+    string snap_id = 1;
+}
+
+message StopVMReq {
+    string id = 1;
+}
+
+message GetVMIPReq {
+    string id = 1;
+}
+
+message GetVMMetadataReq {
+    string id = 1;
+}
+
+message SendSSHCommandReq {
+    string id = 1;
+    repeated string command = 2;
+}
+
+message Empty {}
+
+message Status {
+    string message = 1;
+}
+
+message StartVMResp {
+    string id = 1;
+    string chroot = 2;
+    string ip = 3;
+    string pid = 4;
+    string workload = 5;
+    string state = 6;
+}
+
+message SnapshotVMResp {
+    string message = 1;
+    string snap_id = 2;
+}
+
+message RestoreVMResp {
+    string id = 1;
+    string chroot = 2;
+    string ip = 3;
+    string pid = 4;
+    string workload = 5;
+    string state = 6;
+}
+
+message GetVMIPResp {
+    string message = 1;
+    string ip = 2;
+}
+
+message SnapshotList {
+    repeated string snapshots = 1;
+}
+
+message GetVMMetadataResp {
+    string id = 1;
+    string chroot = 2;
+    string ip = 3;
+    string pid = 4;
+    string workload = 5;
+    string state = 6;
+}
+
+message VMList {
+    repeated GetVMMetadataResp vms = 1;
+}
+
+message SendSSHCommandResp {
+    string message = 1;
+    string output = 2;
+}
+
+message GetPIDResp {
+    uint32 pid = 1;
+}
