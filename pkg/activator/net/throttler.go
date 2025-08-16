@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -48,6 +49,7 @@ import (
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
 	"knative.dev/pkg/reconciler"
+	"knative.dev/serving/pkg/activator"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	revisioninformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/revision"
@@ -259,7 +261,48 @@ func (rt *revisionThrottler) acquireDest(ctx context.Context) (func(), *podTrack
 	return rt.lbPolicy(ctx, rt.assignedTrackers)
 }
 
+var MapIPtoVmID = make(map[string]string)
+
+func cleanUpRemovedVMs(khalaOrchClients []khala.OrchestratorClient, logger *zap.SugaredLogger) {
+	logger.Infof("khala: cleaning up removed vms: %v", activator.ToRemoveVMs)
+	// Loop through all VMs that need to be removed
+	for _, vm := range activator.ToRemoveVMs {
+		arr := strings.Split(MapIPtoVmID[vm.IPAddress], "__")
+		vmID := arr[0]
+		orchID := arr[1]
+		// In a real-world scenario, you might want to select the client based on VM location or other logic.
+		if len(khalaOrchClients) == 0 {
+			logger.Warnf("khala: No orchestrator clients available to kill VM: %v", vm.IPAddress)
+			continue
+		}
+		orchIdx, _ := strconv.Atoi(orchID)
+		client := khalaOrchClients[orchIdx]
+		_, err := client.StopVM(context.Background(), &khala.StopVMReq{
+			Id: vmID,
+		})
+		if err != nil {
+			logger.Errorf("khala: Failed to kill VM %v: %v", vm.IPAddress, err)
+		} else {
+			logger.Infof("khala: Successfully killed VM %v", vm.IPAddress)
+			activator.RemoveVMRequestHistoryByIP(vm.IPAddress)
+		}
+	}
+	// After attempting to kill all VMs, clear the ToRemoveVMs slice
+	activator.ToRemoveVMs = []activator.VMRequestInfo{}
+}
+
+var removeVMsOnce sync.Once
+
 func (rt *revisionThrottler) try(ctx context.Context, function func(string) error) error {
+	removeVMsOnce.Do(func() {
+		go func() {
+			// This goroutine will run forever, cleaning up VMs every 10 seconds.
+			for {
+				cleanUpRemovedVMs(rt.khalaOrchClient, rt.logger)
+				time.Sleep(10 * time.Second)
+			}
+		}()
+	})
 
 	// Get the string representation of revID, e.g., "namespace/name-abc123"
 	// "name" will refer to the workload name, hence will help to get the snapshot name to restore
@@ -278,69 +321,84 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 	}
 	rt.logger.Infof("khala: extracted revID: %s", extractedName)
 
-	// // start a vm with vm-orchestrator
-	// newVM, err := rt.khalaOrchClient.StartVM(context.Background(), &khala.StartVMReq{
-	// 	Workload: "empty",
-	// })
-	// if err != nil {
-	// 	rt.logger.Errorf("failed to create vm: %v", err)
-	// 	return err
-	// }
-	// rt.logger.Infof("created vm: %v", newVM.Id)
+	// get not in use vms but keep alived
+	notInUseVMs := activator.GetNotInUseVMs(extractedName)
+	rt.logger.Infof("khala: not in use vms: %v", notInUseVMs)
 
-	randomIndex := rand.Intn(len(rt.khalaOrchClient))
-	// instead restore the vm from snapshot
-	var restoreVM *khala.RestoreVMResp
-	var addServer *khala.ServerMetadata
-	var err error
-	// Retry 5 times to restore VMs
-	for retry := 0; retry < 5; retry++ {
-		restoreVM, err = rt.khalaOrchClient[randomIndex].RestoreVM(context.Background(), &khala.RestoreVMReq{
-			SnapId: extractedName + "_s3_nexus_rpc_nexus_s3_nexus_rpc_nexus",
-		})
-		if err != nil {
-			rt.logger.Errorf("khala: failed to restore vm: %v", err)
-			continue
-		}
-		rt.logger.Debugf("khala: restored vm: %s", restoreVM.Id)
-
-		addServer, err = rt.nexusBackendClient[randomIndex].AddServer(context.Background(), &khala.AddServerReq{
-			Id:            restoreVM.Id,
-			Chroot:        restoreVM.Chroot,
-			SetS3Handler:  true,
-			SetRPCHandler: true,
-		})
-		if err != nil {
-			rt.logger.Errorf("khala: failed to add server: %v", err)
-		} else if addServer == nil {
-			err = fmt.Errorf("addServer returned nil metadata for vm %s", restoreVM.Id)
-		}
-		rt.logger.Debugf("khala: add server response %s: %v", restoreVM.Id, addServer)
-
-		if err == nil {
+	// if not in use vms is not empty, then restore the vm from snapshot
+	if len(notInUseVMs) > 0 {
+		randomIndex := rand.Intn(len(notInUseVMs))
+		vmIP := notInUseVMs[randomIndex].IPAddress
+		activator.SetLastRequestAt(extractedName, vmIP, time.Now().UnixMilli())
+		activator.SetInUse(extractedName, vmIP, true)
+		rt.logger.Infof("khala: vm reused ip: %v", vmIP)
+		return function(vmIP)
+	} else {
+		randomIndex := rand.Intn(len(rt.khalaOrchClient))
+		for retr := 0; retr < 5; retr++ {
+			if rt.khalaOrchClient[randomIndex] == nil || rt.nexusBackendClient[randomIndex] == nil {
+				// regenerate random index
+				randomIndex = rand.Intn(len(rt.khalaOrchClient))
+				continue
+			}
 			break
 		}
-		rt.logger.Warnf("khala: retrying to restore vm %s after error: %v", restoreVM.Id, err)
-	}
-	if err != nil {
-		rt.logger.Fatalf("khala: failed to restore vm after retries: %v", err)
-	}
+		// instead restore the vm from snapshot
+		var restoreVM *khala.RestoreVMResp
+		var addServer *khala.ServerMetadata
+		var err error
+		// Retry 5 times to restore VMs
+		for retry := 0; retry < 5; retry++ {
+			restoreVM, err = rt.khalaOrchClient[randomIndex].RestoreVM(context.Background(), &khala.RestoreVMReq{
+				SnapId: extractedName + "_s3_nexus_rpc_nexus_s3_nexus_rpc_nexus",
+			})
+			if err != nil {
+				rt.logger.Errorf("khala: failed to restore vm: %v", err)
+				continue
+			}
+			rt.logger.Debugf("khala: restored vm: %s", restoreVM.Id)
 
-	// get vm ip
-	vmIP, err := rt.khalaOrchClient[randomIndex].GetVMIP(context.Background(), &khala.GetVMIPReq{
-		Id: restoreVM.Id,
-	})
-	if err != nil {
-		rt.logger.Errorf("khala: failed to get vm ip: %v", err)
-		return err
+			addServer, err = rt.nexusBackendClient[randomIndex].AddServer(context.Background(), &khala.AddServerReq{
+				Id:            restoreVM.Id,
+				Chroot:        restoreVM.Chroot,
+				SetS3Handler:  true,
+				SetRPCHandler: true,
+			})
+			if err != nil {
+				rt.logger.Errorf("khala: failed to add server: %v", err)
+			} else if addServer == nil {
+				err = fmt.Errorf("addServer returned nil metadata for vm %s", restoreVM.Id)
+			}
+			rt.logger.Debugf("khala: add server response %s: %v", restoreVM.Id, addServer)
+
+			if err == nil {
+				break
+			}
+			rt.logger.Warnf("khala: retrying to restore vm %s after error: %v", restoreVM.Id, err)
+		}
+		if err != nil {
+			rt.logger.Fatalf("khala: failed to restore vm after retries: %v", err)
+		}
+
+		// get vm ip
+		vmIP, err := rt.khalaOrchClient[randomIndex].GetVMIP(context.Background(), &khala.GetVMIPReq{
+			Id: restoreVM.Id,
+		})
+		if err != nil {
+			rt.logger.Errorf("khala: failed to get vm ip: %v", err)
+			return err
+		}
+		rt.logger.Infof("khala: vm ip: %v", vmIP.Ip)
+		rt.logger.Infof("khala: nodes: %v", rt.nodes)
+
+		vm_grpc_server_port := addServer.GetRpcIncomingPort()
+		vm_ip := rt.nodes[randomIndex] + ":" + strconv.Itoa(int(vm_grpc_server_port))
+		MapIPtoVmID[vm_ip] = restoreVM.Id + "__" + strconv.Itoa(randomIndex)
+		activator.AddVMRequestHistory(extractedName, vm_ip, time.Now().UnixMilli())
+
+		activator.SetInUse(extractedName, vm_ip, true)
+		return function(vm_ip)
 	}
-	rt.logger.Infof("khala: vm ip: %v", vmIP.Ip)
-	rt.logger.Infof("khala: nodes: %v", rt.nodes)
-
-	vm_grpc_server := addServer.GetRpcIncomingPort()
-
-	// return function(vmIP.Ip)
-	return function(rt.nodes[randomIndex] + ":" + strconv.Itoa(int(vm_grpc_server)))
 
 	// var ret error
 
