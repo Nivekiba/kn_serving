@@ -1,6 +1,6 @@
-/tmp/tmp.Ic9MTFGiIQ/serving-core.yaml
-/tmp/tmp.Ic9MTFGiIQ/serving-default-domain.yaml
-/tmp/tmp.Ic9MTFGiIQ/serving-storage-version-migration.yaml
-/tmp/tmp.Ic9MTFGiIQ/serving-post-install-jobs.yaml
-/tmp/tmp.Ic9MTFGiIQ/serving-hpa.yaml
-/tmp/tmp.Ic9MTFGiIQ/serving-crds.yaml
+/tmp/tmp.vBVcnT22Uu/serving-core.yaml
+/tmp/tmp.vBVcnT22Uu/serving-default-domain.yaml
+/tmp/tmp.vBVcnT22Uu/serving-storage-version-migration.yaml
+/tmp/tmp.vBVcnT22Uu/serving-post-install-jobs.yaml
+/tmp/tmp.vBVcnT22Uu/serving-hpa.yaml
+/tmp/tmp.vBVcnT22Uu/serving-crds.yaml

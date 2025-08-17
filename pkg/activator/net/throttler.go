@@ -18,7 +18,6 @@ package net
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -293,13 +292,14 @@ func cleanUpRemovedVMs(khalaOrchClients []khala.OrchestratorClient, logger *zap.
 
 var removeVMsOnce sync.Once
 
+// baseline version
 func (rt *revisionThrottler) try(ctx context.Context, function func(string) error) error {
 	removeVMsOnce.Do(func() {
 		go func() {
 			// This goroutine will run forever, cleaning up VMs every 10 seconds.
 			for {
 				cleanUpRemovedVMs(rt.khalaOrchClient, rt.logger)
-				time.Sleep(10 * time.Second)
+				time.Sleep(5 * time.Second)
 			}
 		}()
 	})
@@ -345,36 +345,17 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 		}
 		// instead restore the vm from snapshot
 		var restoreVM *khala.RestoreVMResp
-		var addServer *khala.ServerMetadata
 		var err error
 		// Retry 5 times to restore VMs
 		for retry := 0; retry < 5; retry++ {
 			restoreVM, err = rt.khalaOrchClient[randomIndex].RestoreVM(context.Background(), &khala.RestoreVMReq{
-				SnapId: extractedName + "_s3_nexus_rpc_nexus_s3_nexus_rpc_nexus",
+				SnapId: extractedName,
 			})
 			if err != nil {
-				rt.logger.Errorf("khala: failed to restore vm: %v", err)
+				rt.logger.Errorf("khala: failed to restore vm with name %s: %v", extractedName, err)
 				continue
 			}
 			rt.logger.Debugf("khala: restored vm: %s", restoreVM.Id)
-
-			addServer, err = rt.nexusBackendClient[randomIndex].AddServer(context.Background(), &khala.AddServerReq{
-				Id:            restoreVM.Id,
-				Chroot:        restoreVM.Chroot,
-				SetS3Handler:  true,
-				SetRPCHandler: true,
-			})
-			if err != nil {
-				rt.logger.Errorf("khala: failed to add server: %v", err)
-			} else if addServer == nil {
-				err = fmt.Errorf("addServer returned nil metadata for vm %s", restoreVM.Id)
-			}
-			rt.logger.Debugf("khala: add server response %s: %v", restoreVM.Id, addServer)
-
-			if err == nil {
-				break
-			}
-			rt.logger.Warnf("khala: retrying to restore vm %s after error: %v", restoreVM.Id, err)
 		}
 		if err != nil {
 			rt.logger.Fatalf("khala: failed to restore vm after retries: %v", err)
@@ -391,7 +372,8 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 		rt.logger.Infof("khala: vm ip: %v", vmIP.Ip)
 		rt.logger.Infof("khala: nodes: %v", rt.nodes)
 
-		vm_grpc_server_port := addServer.GetRpcIncomingPort()
+		restoreVMID, _ := strconv.Atoi(restoreVM.Id)
+		vm_grpc_server_port := 50000 + restoreVMID
 		vm_ip := rt.nodes[randomIndex] + ":" + strconv.Itoa(int(vm_grpc_server_port))
 		MapIPtoVmID[vm_ip] = restoreVM.Id + "__" + strconv.Itoa(randomIndex)
 		activator.AddVMRequestHistory(extractedName, vm_ip, time.Now().UnixMilli())
@@ -399,32 +381,141 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 		activator.SetInUse(extractedName, vm_ip, true)
 		return function(vm_ip)
 	}
-
-	// var ret error
-
-	// // Retrying infinitely as long as we receive no dest. Outer semaphore and inner
-	// // pod capacity are not changed atomically, hence they can race each other. We
-	// // "reenqueue" requests should that happen.
-	// reenqueue := true
-	// for reenqueue {
-	// 	reenqueue = false
-	// 	if err := rt.breaker.Maybe(ctx, func() {
-	// 		cb, tracker := rt.acquireDest(ctx)
-	// 		if tracker == nil {
-	// 			// This can happen if individual requests raced each other or if pod
-	// 			// capacity was decreased after passing the outer semaphore.
-	// 			reenqueue = true
-	// 			return
-	// 		}
-	// 		defer cb()
-	// 		// We already reserved a guaranteed spot. So just execute the passed functor.
-	// 		ret = function(tracker.dest)
-	// 	}); err != nil {
-	// 		return err
-	// 	}
-	// }
-	// return ret
 }
+
+// // khala version
+// func (rt *revisionThrottler) try(ctx context.Context, function func(string) error) error {
+// 	removeVMsOnce.Do(func() {
+// 		go func() {
+// 			// This goroutine will run forever, cleaning up VMs every 10 seconds.
+// 			for {
+// 				cleanUpRemovedVMs(rt.khalaOrchClient, rt.logger)
+// 				time.Sleep(5 * time.Second)
+// 			}
+// 		}()
+// 	})
+
+// 	// Get the string representation of revID, e.g., "namespace/name-abc123"
+// 	// "name" will refer to the workload name, hence will help to get the snapshot name to restore
+// 	revIDStr := rt.revID.String()
+
+// 	slashIdx := strings.Index(revIDStr, "/")
+// 	dashIdx := strings.Index(revIDStr, "-")
+
+// 	var extractedName string
+// 	if slashIdx != -1 && dashIdx != -1 && dashIdx > slashIdx {
+// 		extractedName = revIDStr[slashIdx+1 : dashIdx]
+// 	} else if slashIdx != -1 {
+// 		extractedName = revIDStr[slashIdx+1:]
+// 	} else {
+// 		extractedName = revIDStr
+// 	}
+// 	rt.logger.Infof("khala: extracted revID: %s", extractedName)
+
+// 	// get not in use vms but keep alived
+// 	notInUseVMs := activator.GetNotInUseVMs(extractedName)
+// 	rt.logger.Infof("khala: not in use vms: %v", notInUseVMs)
+
+// 	// if not in use vms is not empty, then restore the vm from snapshot
+// 	if len(notInUseVMs) > 0 {
+// 		randomIndex := rand.Intn(len(notInUseVMs))
+// 		vmIP := notInUseVMs[randomIndex].IPAddress
+// 		activator.SetLastRequestAt(extractedName, vmIP, time.Now().UnixMilli())
+// 		activator.SetInUse(extractedName, vmIP, true)
+// 		rt.logger.Infof("khala: vm reused ip: %v", vmIP)
+// 		return function(vmIP)
+// 	} else {
+// 		randomIndex := rand.Intn(len(rt.khalaOrchClient))
+// 		for retr := 0; retr < 5; retr++ {
+// 			if rt.khalaOrchClient[randomIndex] == nil || rt.nexusBackendClient[randomIndex] == nil {
+// 				// regenerate random index
+// 				randomIndex = rand.Intn(len(rt.khalaOrchClient))
+// 				continue
+// 			}
+// 			break
+// 		}
+// 		// instead restore the vm from snapshot
+// 		var restoreVM *khala.RestoreVMResp
+// 		var addServer *khala.ServerMetadata
+// 		var err error
+// 		// Retry 5 times to restore VMs
+// 		for retry := 0; retry < 5; retry++ {
+// 			restoreVM, err = rt.khalaOrchClient[randomIndex].RestoreVM(context.Background(), &khala.RestoreVMReq{
+// 				SnapId: extractedName + "_s3_nexus_rpc_nexus",
+// 			})
+// 			if err != nil {
+// 				rt.logger.Errorf("khala: failed to restore vm with name %s: %v", extractedName+"_s3_nexus_rpc_nexus", err)
+// 				continue
+// 			}
+// 			rt.logger.Debugf("khala: restored vm: %s", restoreVM.Id)
+
+// 			addServer, err = rt.nexusBackendClient[randomIndex].AddServer(context.Background(), &khala.AddServerReq{
+// 				Id:            restoreVM.Id,
+// 				Chroot:        restoreVM.Chroot,
+// 				SetS3Handler:  true,
+// 				SetRPCHandler: true,
+// 			})
+// 			if err != nil {
+// 				rt.logger.Errorf("khala: failed to add server: %v", err)
+// 			} else if addServer == nil {
+// 				err = fmt.Errorf("addServer returned nil metadata for vm %s", restoreVM.Id)
+// 			}
+// 			rt.logger.Debugf("khala: add server response %s: %v", restoreVM.Id, addServer)
+
+// 			if err == nil {
+// 				break
+// 			}
+// 			rt.logger.Warnf("khala: retrying to restore vm %s after error: %v", restoreVM.Id, err)
+// 		}
+// 		if err != nil {
+// 			rt.logger.Fatalf("khala: failed to restore vm after retries: %v", err)
+// 		}
+
+// 		// get vm ip
+// 		vmIP, err := rt.khalaOrchClient[randomIndex].GetVMIP(context.Background(), &khala.GetVMIPReq{
+// 			Id: restoreVM.Id,
+// 		})
+// 		if err != nil {
+// 			rt.logger.Errorf("khala: failed to get vm ip: %v", err)
+// 			return err
+// 		}
+// 		rt.logger.Infof("khala: vm ip: %v", vmIP.Ip)
+// 		rt.logger.Infof("khala: nodes: %v", rt.nodes)
+
+// 		vm_grpc_server_port := addServer.GetRpcIncomingPort()
+// 		vm_ip := rt.nodes[randomIndex] + ":" + strconv.Itoa(int(vm_grpc_server_port))
+// 		MapIPtoVmID[vm_ip] = restoreVM.Id + "__" + strconv.Itoa(randomIndex)
+// 		activator.AddVMRequestHistory(extractedName, vm_ip, time.Now().UnixMilli())
+
+// 		activator.SetInUse(extractedName, vm_ip, true)
+// 		return function(vm_ip)
+// 	}
+
+// 	// var ret error
+
+// 	// // Retrying infinitely as long as we receive no dest. Outer semaphore and inner
+// 	// // pod capacity are not changed atomically, hence they can race each other. We
+// 	// // "reenqueue" requests should that happen.
+// 	// reenqueue := true
+// 	// for reenqueue {
+// 	// 	reenqueue = false
+// 	// 	if err := rt.breaker.Maybe(ctx, func() {
+// 	// 		cb, tracker := rt.acquireDest(ctx)
+// 	// 		if tracker == nil {
+// 	// 			// This can happen if individual requests raced each other or if pod
+// 	// 			// capacity was decreased after passing the outer semaphore.
+// 	// 			reenqueue = true
+// 	// 			return
+// 	// 		}
+// 	// 		defer cb()
+// 	// 		// We already reserved a guaranteed spot. So just execute the passed functor.
+// 	// 		ret = function(tracker.dest)
+// 	// 	}); err != nil {
+// 	// 		return err
+// 	// 	}
+// 	// }
+// 	// return ret
+// }
 
 func (rt *revisionThrottler) calculateCapacity(backendCount, numTrackers, activatorCount int) int {
 	targetCapacity := 0
